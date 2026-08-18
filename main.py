@@ -1,4 +1,5 @@
 import io
+import os
 import smtplib
 from email.message import EmailMessage
 from fastapi import FastAPI, Request
@@ -13,8 +14,8 @@ app = FastAPI()
 SMTP_SERVER = "smtp-relay.brevo.com"
 SMTP_PORT = 587
 SMTP_USERNAME = "b5f05b001@smtp-brevo.com"
-# ⚠️ REMPLACEZ LA LIGNE CI-DESSOUS PAR VOTRE VRAIE CLÉ SMTP BREVO (xsmtpsib-...)
-SMTP_PASSWORD = "xsmtpsib-f962cae3e71e411bc1844b06ac2cd83cd25cc24ce4cd5799a5ce30ac4a422807-RV5Y9sc9m3DVCFV9"
+# Récupération sécurisée du mot de passe via Variable d'environnement
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 # Dictionnaire de sécurité : Code PIN -> Nom de l'agent
 DICTIONNAIRE_AGENTS = {
@@ -120,13 +121,14 @@ def generer_recu_pdf(
 async def kobo_webhook(request: Request):
   data = await request.json()
 
-  # 1. Extraction du matricule (incluant matricule_prepo)
+  # 1. Extraction du matricule
   matricule = (
       data.get("matricule_prepo")
       or data.get("matricule_elec")
       or data.get("matricule_mec")
       or data.get("matricule_btp")
-      or data.get("matricule_st")
+      or data.get("matricule_info")
+      or data.get("matricule_prepo")
       or "Non spécifié"
   )
 
