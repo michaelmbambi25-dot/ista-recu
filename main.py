@@ -15,8 +15,11 @@ SMTP_SERVER = "smtp-relay.brevo.com"
 SMTP_USERNAME = "b5f05b001@smtp-brevo.com"
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
+# ⚠️ Indiquez ici l'adresse e-mail exacte de votre compte Brevo :
+SENDER_EMAIL = "michealmbambi25@gmail.com"
+
 # Dictionnaire de sécurité : Code PIN -> Nom de l'agent
-DICTIONNAIRE_AGENTS ={
+DICTIONNAIRE_AGENTS = {
     "1234": "M. KABANGU Alain",
     "5678": "Mme MAVUNGU Clarisse",
     "0101": "M. DINZENZA Geordi",
@@ -151,7 +154,7 @@ async def kobo_webhook(request: Request):
       or data.get("matricule_elec")
       or data.get("matricule_mec")
       or data.get("matricule_btp")
-      or data.get("matricule_info")
+      or data.get("matricule_st")
       or data.get("matricule")
       or "Non spécifié"
   )
@@ -189,12 +192,12 @@ async def kobo_webhook(request: Request):
       nom_agent=nom_agent,
   )
 
-  # 5. Préparation du Mail
+  # 5. Préparation du Mail avec la bonne adresse expéditeur
   msg = EmailMessage()
   msg["Subject"] = (
       f"Reçu de paiement ISTA-LB - {nom_etudiant} ({matricule})"
   )
-  msg["From"] = f"Comptabilité ISTA-LB <{SMTP_USERNAME}>"
+  msg["From"] = f"Comptabilité ISTA-LB <{SENDER_EMAIL}>"
   msg["To"] = email_destinataire
 
   msg.set_content(f"""
@@ -227,27 +230,17 @@ ISTA-LB (Boma)
       filename=f"Recu_ISTA_LB_{matricule}.pdf",
   )
 
-  # 6. Envoi multi-ports (Port 2525 puis Port 465 SSL de secours)
+  # 6. Envoi via Port 2525
   try:
-    print("--> Tentative d'envoi via Port 2525...")
+    print("--> Envoi de l'e-mail...")
     with smtplib.SMTP(SMTP_SERVER, 2525, timeout=15) as server:
       server.starttls()
       server.login(SMTP_USERNAME, SMTP_PASSWORD)
       server.send_message(msg)
 
-    print("✅ E-MAIL ENVOYÉ AVEC SUCCÈS (PORT 2525) !")
+    print("✅ E-MAIL TRANSMIS À BREVO AVEC SUCCÈS !")
     return {"status": "success", "message": "Reçu PDF envoyé"}
 
-  except Exception as e1:
-    print(f"⚠️ Port 2525 échoué ({e1}), tentative sur Port 465 (SSL)...")
-    try:
-      with smtplib.SMTP_SSL(SMTP_SERVER, 465, timeout=15) as server:
-        server.login(SMTP_USERNAME, SMTP_PASSWORD)
-        server.send_message(msg)
-
-      print("✅ E-MAIL ENVOYÉ AVEC SUCCÈS (PORT 465 SSL) !")
-      return {"status": "success", "message": "Reçu PDF envoyé"}
-
-    except Exception as e2:
-      print(f"❌ ERREUR FINALE D'ENVOI : {e2}")
-      return {"status": "failed", "error": str(e2)}
+  except Exception as e:
+    print(f"❌ ERREUR ENVOI : {e}")
+    return {"status": "failed", "error": str(e)}
