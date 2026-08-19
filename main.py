@@ -16,7 +16,7 @@ SMTP_USERNAME = "b5f05b001@smtp-brevo.com"
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 # ⚠️ Indiquez ici l'adresse e-mail exacte de votre compte Brevo :
-SENDER_EMAIL = "michealmbambi25@gmail.com"
+SENDER_EMAIL = "michaelmbambi25@gmail.com"
 
 # Dictionnaire de sécurité : Code PIN -> Nom de l'agent
 DICTIONNAIRE_AGENTS = {
