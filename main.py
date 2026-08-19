@@ -23,15 +23,38 @@ DICTIONNAIRE_AGENTS = {
     "0101": "M. DINZENZA Geordi",
     "0303": "M. MBAMBI Mike",
 }
+
+def nettoyer_texte(texte: str) -> str:
+    """Remplace les tirets du bas et formate joliment le texte."""
+    if not texte:
+        return "N/A"
+    txt = str(texte).replace("___", " ").replace("__", " ").replace("_", " ").strip()
+    return txt.capitalize()
+
+def extraire_nom_etudiant(data: dict) -> str:
+    """Extraction ciblée du nom de l'étudiant."""
+    mots_cles = ["nom_etudiant", "nom_complet", "noms_etudiant", "nom_prenom", "identite", "student_name", "noms", "nom"]
+    
+    for key, val in data.items():
+        key_clean = key.lower().replace("_", "").replace("-", "")
+        # Ignorer les clés de la banque, de l'agent ou du motif pour éviter la confusion
+        if "banque" in key_clean or "agent" in key_clean or "motif" in key_clean or "frais" in key_clean:
+            continue
+        if val and str(val).strip() != "":
+            for kw in mots_cles:
+                if kw in key_clean:
+                    return nettoyer_texte(val)
+    return "Étudiant"
+
 def extraire_valeur(data: dict, mots_cles: list, defaut: str = "N/A") -> str:
-    """Recherche intelligemment une valeur dans les données envoyées par KoboToolbox."""
+    """Extraction générale des autres champs."""
     for key, val in data.items():
         if val is not None and str(val).strip() != "":
             key_clean = key.lower().replace("_", "").replace("-", "")
             for kw in mots_cles:
                 kw_clean = kw.lower().replace("_", "").replace("-", "")
                 if kw_clean in key_clean:
-                    return str(val).strip()
+                    return nettoyer_texte(val)
     return defaut
 
 def generer_recu_pdf(nom, matricule, filiere, motif, montant, devise, banque, num_bordereau, date_enregistr, nom_agent):
@@ -68,8 +91,8 @@ def generer_recu_pdf(nom, matricule, filiere, motif, montant, devise, banque, nu
         ("Matricule Étudiant :", matricule),
         ("Filière / Option :", filiere),
         ("Motif du paiement :", motif),
-        ("Montant réglé :", f"{montant} {devise}"),
-        ("Nom de la banque :", banque),
+        ("Montant réglé :", f"{montant} {devise.upper()}"),
+        ("Nom de la banque :", banque.upper()),
         ("N° de bordereau :", num_bordereau),
         ("Date d'enregistrement :", date_enregistr),
         ("Agent percepteur :", nom_agent),
@@ -104,16 +127,15 @@ async def kobo_webhook(request: Request):
     data = await request.json()
     
     print("=== NOUVELLE SOUMISSION KOBO ===")
-    print("DONNÉES REÇUES BRUTES :", data)
 
-    # Extraction dynamique des données
+    # Extraction ciblée
     email_destinataire = extraire_valeur(data, ["email", "mail", "courriel"], "")
     
     if not email_destinataire:
         print("❌ ERREUR : Aucun champ e-mail détecté.")
         return {"status": "error", "message": "Adresse e-mail manquante."}
 
-    nom_etudiant = extraire_valeur(data, ["nom", "student", "prenom"], "Étudiant")
+    nom_etudiant = extraire_nom_etudiant(data)
     matricule = extraire_valeur(data, ["matricule", "matr", "code_etudiant"], "Non spécifié")
     filiere = extraire_valeur(data, ["filiere", "option", "section"], "Non spécifiée")
     motif = extraire_valeur(data, ["motif", "frais", "raison", "paiement"], "Frais d'études")
@@ -124,7 +146,7 @@ async def kobo_webhook(request: Request):
     date_enregistr = extraire_valeur(data, ["date", "today"], "N/A")
     
     # Gestion du code PIN / Agent
-    pin_saisi = extraire_valeur(data, ["pin", "code", "agent"], "")
+    pin_saisi = extraire_valeur(data, ["pin", "code"], "")
     nom_agent = DICTIONNAIRE_AGENTS.get(pin_saisi, extraire_valeur(data, ["agent", "percepteur"], "Agent Percepteur"))
 
     # Génération du reçu PDF
@@ -151,11 +173,11 @@ async def kobo_webhook(request: Request):
 
 Veuillez trouver ci-joint votre reçu de paiement officiel délivré par le service de comptabilité de l'ISTA-LB.
 
-RÉCAPITULATIF :
-- Étudiant : {nom_etudiant}
-- Matricule : {matricule}
+RÉCAPITULATIF DU PAIEMENT :
+- Nom de l'étudiant : {nom_etudiant}
+- Matricule Étudiant : {matricule}
 - Filière : {filiere}
-- Montant : {montant} {devise}
+- Montant : {montant} {devise.upper()}
 - N° Bordereau : {num_bordereau}
 
 Cordialement,
