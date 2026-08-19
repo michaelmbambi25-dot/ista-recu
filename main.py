@@ -14,7 +14,6 @@ app = FastAPI()
 SMTP_SERVER = "smtp-relay.brevo.com"
 SMTP_PORT = 587
 SMTP_USERNAME = "b5f05b001@smtp-brevo.com"
-# Récupération sécurisée du mot de passe via Variable d'environnement
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 
 # Dictionnaire de sécurité : Code PIN -> Nom de l'agent
@@ -121,23 +120,52 @@ def generer_recu_pdf(
 async def kobo_webhook(request: Request):
   data = await request.json()
 
-  # 1. Extraction du matricule
+  # Affichage des données reçues pour diagnostic instantané
+  print("=== NOUVELLE SOUMISSION KOBO ===")
+
+  # 1. Recherche intelligente de l'adresse e-mail
+  email_destinataire = (
+      data.get("email_etudiant")
+      or data.get("email")
+      or data.get("adresse_email")
+      or data.get("mail")
+      or data.get("courriel")
+  )
+
+  if not email_destinataire:
+    for key, value in data.items():
+      if "email" in key.lower() or "mail" in key.lower():
+        email_destinataire = value
+        break
+
+  print(f"--> E-mail détecté : {email_destinataire}")
+
+  if not email_destinataire:
+    print("❌ ERREUR : Aucun champ d'adresse e-mail trouvé dans les données.")
+    return {
+        "status": "error",
+        "message": "Adresse e-mail manquante dans le formulaire.",
+    }
+
+  # 2. Extraction du matricule
   matricule = (
       data.get("matricule_prepo")
       or data.get("matricule_elec")
       or data.get("matricule_mec")
       or data.get("matricule_btp")
       or data.get("matricule_info")
-      or data.get("matricule_prepo")
+      or data.get("matricule")
       or "Non spécifié"
   )
 
-  # 2. Récupération des données
+  # 3. Récupération des données
   nom_etudiant = (
-      data.get("nom_etudiant") or data.get("nom_complet") or "Étudiant"
+      data.get("nom_etudiant")
+      or data.get("nom_complet")
+      or data.get("nom")
+      or "Étudiant"
   )
   filiere = data.get("filiere", "N/A")
-  email_destinataire = data.get("email_etudiant")
   montant = data.get("montant", "0")
   devise = data.get("devise", "USD")
 
@@ -146,17 +174,11 @@ async def kobo_webhook(request: Request):
   num_bordereau = data.get("num_bordereau") or data.get("bordereau") or "N/A"
   date_enregistr = data.get("date_enregistrement") or data.get("date") or "N/A"
 
-  # 3. Conversion PIN Agent -> Nom
+  # 4. Conversion PIN Agent -> Nom
   pin_saisi = str(data.get("code_pin_agent", ""))
   nom_agent = DICTIONNAIRE_AGENTS.get(pin_saisi, "Agent Percepteur")
 
-  if not email_destinataire:
-    return {
-        "status": "error",
-        "message": "Adresse e-mail manquante dans le formulaire.",
-    }
-
-  # 4. Génération PDF
+  # 5. Génération PDF
   pdf_bytes = generer_recu_pdf(
       nom=nom_etudiant,
       matricule=matricule,
@@ -170,7 +192,7 @@ async def kobo_webhook(request: Request):
       nom_agent=nom_agent,
   )
 
-  # 5. E-mail
+  # 6. Création du message e-mail
   msg = EmailMessage()
   msg["Subject"] = (
       f"Reçu de paiement ISTA-LB - {nom_etudiant} ({matricule})"
@@ -208,13 +230,15 @@ ISTA-LB (Boma)
       filename=f"Recu_ISTA_LB_{matricule}.pdf",
   )
 
-  # 6. Envoi
+  # 7. Envoi via Brevo
   try:
+    print("--> Tentative d'envoi du mail via Brevo...")
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
       server.starttls()
       server.login(SMTP_USERNAME, SMTP_PASSWORD)
       server.send_message(msg)
 
+    print("✅ E-MAIL ENVOYÉ AVEC SUCCÈS !")
     return {
         "status": "success",
         "message": "Reçu PDF envoyé",
@@ -222,4 +246,5 @@ ISTA-LB (Boma)
     }
 
   except Exception as e:
+    print(f"❌ ERREUR SMTP LORS DE L'ENVOI : {e}")
     return {"status": "failed", "error": str(e)}
