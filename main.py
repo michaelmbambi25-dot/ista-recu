@@ -27,8 +27,9 @@ DICTIONNAIRE_AGENTS = {
 # Dictionnaire de secours : Matricule -> Nom de l'étudiant
 # (Utile si votre formulaire Kobo ne saisit que le matricule)
 DICTIONNAIRE_ETUDIANTS = {
-    "2026_info_l2_002": "MBAMBI MICHAEL",
-    "2026_info_l2_001": "KAPITA Jean",
+    "2026_info_l1_001": "NSASI NIATI Brigite",
+    "2026_info_l2_002": "NSAKU MVUBU Dieu",
+    "2026_info_l3_002": "NZUZI NZUZI Martin",
 }
 
 def nettoyer_texte(texte: str) -> str:
