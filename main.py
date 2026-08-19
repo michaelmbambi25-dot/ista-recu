@@ -16,7 +16,7 @@ SMTP_USERNAME = "b5f05b001@smtp-brevo.com"
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SENDER_EMAIL = "michaelmbambi25@gmail.com"
 
-# Dictionnaire Code PIN -> Nom de l'agent
+# Dictionnaire de correspondance Code PIN / ID -> Nom propre de l'agent
 DICTIONNAIRE_AGENTS = {
     "1234": "M. KABANGU Alain",
     "5678": "Mme MAVUNGU Clarisse",
@@ -24,37 +24,70 @@ DICTIONNAIRE_AGENTS = {
     "0303": "M. MBAMBI Mike",
 }
 
+# Dictionnaire de secours : Matricule -> Nom de l'étudiant
+# (Utile si votre formulaire Kobo ne saisit que le matricule)
+DICTIONNAIRE_ETUDIANTS = {
+    "2026_info_l2_002": "MBAMBI MICHAEL",
+    "2026_info_l2_001": "KAPITA Jean",
+}
+
 def nettoyer_texte(texte: str) -> str:
-    """Remplace les tirets du bas et formate joliment le texte."""
+    """Nettoie les codes et tirets bas envoyés par KoboToolbox."""
     if not texte:
         return "N/A"
-    txt = str(texte).replace("___", " ").replace("__", " ").replace("_", " ").strip()
-    return txt.capitalize()
-
-def extraire_nom_etudiant(data: dict) -> str:
-    """Extraction ciblée du nom de l'étudiant."""
-    mots_cles = ["nom_etudiant", "nom_complet", "noms_etudiant", "nom_prenom", "identite", "student_name", "noms", "nom"]
+    txt = str(texte)
     
+    # Corrections spécifiques des libellés Kobo
+    txt = txt.replace("frais_acad_mique___min_ral", "Frais Académiques (Minerval)")
+    txt = txt.replace("frais_acad_mique", "Frais Académiques")
+    txt = txt.replace("agent_04_malunda_jackson___sci", "M. MALUNDA Jackson")
+    
+    # Nettoyage général des tirets du bas
+    txt = txt.replace("___", " ").replace("__", " ").replace("_", " ")
+    txt = " ".join(txt.split()).strip()
+    return txt.title()
+
+def extraire_nom_etudiant(data: dict, matricule: str) -> str:
+    """Recherche approfondie du nom de l'étudiant."""
+    # 1. Vérification par matricule dans le dictionnaire
+    if matricule in DICTIONNAIRE_ETUDIANTS:
+        return DICTIONNAIRE_ETUDIANTS[matricule]
+
+    # 2. Recherche dans les champs de données envoyés par Kobo
+    mots_cles = ["nom_etudiant", "noms_etudiant", "nom_complet", "identite", "student_name", "nom_prenom", "nom_etud", "nom", "noms"]
+    exclusions = ["banque", "agent", "motif", "frais", "percepteur", "user", "by", "id", "uuid", "status", "date"]
+
     for key, val in data.items():
-        key_clean = key.lower().replace("_", "").replace("-", "")
-        # Ignorer les clés de la banque, de l'agent ou du motif pour éviter la confusion
-        if "banque" in key_clean or "agent" in key_clean or "motif" in key_clean or "frais" in key_clean:
+        if key.startswith("_") or not val or str(val).strip() == "":
             continue
-        if val and str(val).strip() != "":
-            for kw in mots_cles:
-                if kw in key_clean:
-                    return nettoyer_texte(val)
+
+        # Extraire le nom du champ même s'il est dans un groupe (ex: groupe1/nom)
+        clean_key = key.split("/")[-1].lower()
+
+        if any(ex in clean_key for ex in exclusions):
+            continue
+
+        if any(kw in clean_key for kw in mots_cles):
+            res = nettoyer_texte(val)
+            if res and res.lower() not in ["n/a", "none", "null"]:
+                return res
+
     return "Étudiant"
 
 def extraire_valeur(data: dict, mots_cles: list, defaut: str = "N/A") -> str:
-    """Extraction générale des autres champs."""
+    """Extraction générale des données."""
+    exclusions = ["_id", "_uuid", "_submission_time", "_submitted_by"]
+    
     for key, val in data.items():
-        if val is not None and str(val).strip() != "":
-            key_clean = key.lower().replace("_", "").replace("-", "")
-            for kw in mots_cles:
-                kw_clean = kw.lower().replace("_", "").replace("-", "")
-                if kw_clean in key_clean:
-                    return nettoyer_texte(val)
+        if key in exclusions or val is None or str(val).strip() == "":
+            continue
+
+        clean_key = key.split("/")[-1].lower().replace("_", "").replace("-", "")
+        
+        for kw in mots_cles:
+            kw_clean = kw.lower().replace("_", "").replace("-", "")
+            if kw_clean in clean_key:
+                return nettoyer_texte(val)
     return defaut
 
 def generer_recu_pdf(nom, matricule, filiere, motif, montant, devise, banque, num_bordereau, date_enregistr, nom_agent):
@@ -127,16 +160,17 @@ async def kobo_webhook(request: Request):
     data = await request.json()
     
     print("=== NOUVELLE SOUMISSION KOBO ===")
+    print("CLÉS REÇUES :", list(data.keys()))
 
-    # Extraction ciblée
+    # Extraction des champs
     email_destinataire = extraire_valeur(data, ["email", "mail", "courriel"], "")
     
     if not email_destinataire:
         print("❌ ERREUR : Aucun champ e-mail détecté.")
         return {"status": "error", "message": "Adresse e-mail manquante."}
 
-    nom_etudiant = extraire_nom_etudiant(data)
     matricule = extraire_valeur(data, ["matricule", "matr", "code_etudiant"], "Non spécifié")
+    nom_etudiant = extraire_nom_etudiant(data, matricule)
     filiere = extraire_valeur(data, ["filiere", "option", "section"], "Non spécifiée")
     motif = extraire_valeur(data, ["motif", "frais", "raison", "paiement"], "Frais d'études")
     montant = extraire_valeur(data, ["montant", "somme", "prix", "valeur"], "0")
@@ -145,7 +179,6 @@ async def kobo_webhook(request: Request):
     num_bordereau = extraire_valeur(data, ["bordereau", "numero", "ref", "transaction"], "N/A")
     date_enregistr = extraire_valeur(data, ["date", "today"], "N/A")
     
-    # Gestion du code PIN / Agent
     pin_saisi = extraire_valeur(data, ["pin", "code"], "")
     nom_agent = DICTIONNAIRE_AGENTS.get(pin_saisi, extraire_valeur(data, ["agent", "percepteur"], "Agent Percepteur"))
 
@@ -163,7 +196,7 @@ async def kobo_webhook(request: Request):
         nom_agent=nom_agent
     )
 
-    # Préparation de l'e-mail
+    # Envoi de l'e-mail
     msg = EmailMessage()
     msg["Subject"] = f"Reçu de paiement ISTA-LB - {nom_etudiant} ({matricule})"
     msg["From"] = f"Comptabilité ISTA-LB <{SENDER_EMAIL}>"
