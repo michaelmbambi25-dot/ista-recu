@@ -1,26 +1,28 @@
 import io
 import os
 import smtplib
+import uuid
+from datetime import datetime
 from email.message import EmailMessage
 from fastapi import FastAPI, Request
 
+import qrcode
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 app = FastAPI()
 
 # Configuration SMTP Brevo
 SMTP_SERVER = "smtp-relay.brevo.com"
-SMTP_PORT = 2525  # Port alternatif : 587
+SMTP_PORT = 2525
 SMTP_USERNAME = "b5f05b001@smtp-brevo.com"
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SENDER_EMAIL = "michaelmbambi25@gmail.com"
-
-# E-mail de l'autorité qui recevra les alertes de fraude
 AUTHORITY_EMAIL = "stephaniepfiti@gmail.com"
 
-# Base des bordereaux déjà enregistrés en mémoire (Anti-fraude)
+# Base des bordereaux enregistrés (Anti-fraude)
 BORDEREAUX_UTILISES = set()
 
 # Dictionnaire des agents / percepteurs
@@ -42,23 +44,41 @@ def nettoyer_texte(texte: str) -> str:
     return txt.title()
 
 def extraire_valeur(data: dict, mots_cles: list, defaut: str = "N/A") -> str:
-    """Parcourt le JSON de Kobo pour trouver le champ correspondant."""
     exclusions = ["_id", "_uuid", "_submission_time", "_submitted_by"]
-    
     for key, val in data.items():
         if key in exclusions or val is None or str(val).strip() == "":
             continue
-
         clean_key = key.split("/")[-1].lower().replace("_", "").replace("-", "")
-        
         for kw in mots_cles:
             kw_clean = kw.lower().replace("_", "").replace("-", "")
             if kw_clean in clean_key:
                 return str(val).strip()
     return defaut
 
+def generer_code_transaction() -> str:
+    """Génère un identifiant unique type REC-20260821-A1B2C."""
+    date_str = datetime.now().strftime("%Y%m%d")
+    unique_suffix = uuid.uuid4().hex[:5].upper()
+    return f"REC-{date_str}-{unique_suffix}"
+
+def generer_image_qr(contenu: str) -> io.BytesIO:
+    """Génère une image PNG en mémoire du QR Code."""
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=4,
+        border=2,
+    )
+    qr.add_data(contenu)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="#0D3B66", back_color="white")
+    
+    buffer = io.BytesIO()
+    img.save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
+
 def envoyer_alerte_fraude(num_bordereau: str, matricule: str, nom_agent: str):
-    """Envoie un e-mail d'alerte au responsable de la comptabilité."""
     msg = EmailMessage()
     msg["Subject"] = f"🚨 ALERTE FRAUDE : Bordereau réutilisé ({num_bordereau})"
     msg["From"] = f"Système Anti-Fraude ISTA-LB <{SENDER_EMAIL}>"
@@ -69,27 +89,26 @@ def envoyer_alerte_fraude(num_bordereau: str, matricule: str, nom_agent: str):
 DÉTAILS DU SIGNALEMENT :
 - N° Bordereau suspect : {num_bordereau}
 - Matricule concerné : {matricule}
-- Agent qui a saisi le formulaire : {nom_agent}
+- Agent ayant saisi la demande : {nom_agent}
 
-Ce numéro de bordereau a déjà été utilisé pour générer un reçu auparavant. Aucun reçu officiel n'a été émis pour cette nouvelle tentative.
+Ce numéro de bordereau a déjà été utilisé pour générer un reçu.
 """)
-
     try:
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
             server.starttls()
             if SMTP_PASSWORD:
                 server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.send_message(msg)
-        print(f"⚠️ Alerte fraude envoyée à {AUTHORITY_EMAIL} pour le bordereau {num_bordereau}")
+        print(f"⚠️ Alerte fraude transmise pour le bordereau {num_bordereau}")
     except Exception as e:
-        print(f"❌ Erreur lors de l'envoi de l'alerte fraude : {e}")
+        print(f"❌ Erreur envoi alerte : {e}")
 
-def generer_recu_pdf(matricule, filiere, motif, montant, devise, banque, num_bordereau, date_enregistr, nom_agent):
+def generer_recu_pdf(code_recu, matricule, filiere, motif, montant, devise, banque, num_bordereau, date_enregistr, nom_agent):
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
 
-    # En-tête du document
+    # En-tête
     pdf.setFont("Helvetica-Bold", 12)
     pdf.setFillColor(colors.HexColor("#0D3B66"))
     pdf.drawString(40, height - 50, "INSTITUT SUPÉRIEUR DES TECHNIQUES APPLIQUÉES DE LUKULA À BOMA")
@@ -103,15 +122,23 @@ def generer_recu_pdf(matricule, filiere, motif, montant, devise, banque, num_bor
     pdf.setStrokeColor(colors.HexColor("#0D3B66"))
     pdf.line(40, height - 95, width - 40, height - 95)
 
+    # Titre et Code Transaction Unique
     pdf.setFont("Helvetica-Bold", 14)
-    pdf.drawString(40, height - 130, "REÇU DE PAIEMENT OFFICIEL")
+    pdf.drawString(40, height - 125, "REÇU DE PAIEMENT OFFICIEL")
+    
+    # Génération et affichage du QR Code en haut à droite
+    texte_qr = f"ISTA-LB | RECU: {code_recu} | MATRICULE: {matricule} | BORDEREAU: {num_bordereau} | MONTANT: {montant} {devise.upper()} | STATUT: VALIDE"
+    qr_buffer = generer_image_qr(texte_qr)
+    qr_image = ImageReader(qr_buffer)
+    pdf.drawImage(qr_image, width - 140, height - 190, width=100, height=100)
 
+    # Détails
     pdf.setFont("Helvetica", 10)
-    y = height - 165
-    interligne = 24
+    y = height - 155
+    interligne = 22
 
-    # Détails du paiement (Centrés sur le Matricule)
     details = [
+        ("N° Transaction (ID Reçu) :", code_recu),
         ("Matricule Étudiant :", matricule),
         ("Filière / Option :", filiere),
         ("Motif du paiement :", motif),
@@ -133,12 +160,12 @@ def generer_recu_pdf(matricule, filiere, motif, montant, devise, banque, num_bor
     # Pied de page
     pdf.setLineWidth(0.5)
     pdf.setStrokeColor(colors.gray)
-    pdf.line(40, 90, width - 40, 90)
+    pdf.line(40, 85, width - 40, 85)
 
     pdf.setFont("Helvetica-Oblique", 8)
     pdf.setFillColor(colors.gray)
-    pdf.drawString(40, 75, "Ce document est un reçu électronique officiel délivré par le système automatisé de l'ISTA-LB.")
-    pdf.drawString(40, 63, "Toute rature ou falsification rend ce document caduc.")
+    pdf.drawString(40, 70, "Ce document est un reçu électronique officiel délivré par le système automatisé de l'ISTA-LB.")
+    pdf.drawString(40, 58, "Scannez le QR Code ci-dessus pour vérifier la validité de ce reçu lors des contrôles aux examens.")
 
     pdf.showPage()
     pdf.save()
@@ -149,20 +176,17 @@ def generer_recu_pdf(matricule, filiere, motif, montant, devise, banque, num_bor
 @app.post("/webhook-kobo")
 async def kobo_webhook(request: Request):
     data = await request.json()
-    
-    print("=== DONNÉES REÇUES DE KOBO ===")
-    print(data)
 
-    # 1. Extraction de l'e-mail du destinataire
+    # 1. Extraction e-mail
     email_destinataire = extraire_valeur(data, ["email", "mail", "courriel"], "")
     if not email_destinataire or "@" not in email_destinataire:
-        print("❌ ERREUR : Adresse e-mail invalide ou introuvable.")
-        return {"status": "error", "message": "Adresse e-mail manquante ou invalide."}
+        return {"status": "error", "message": "Adresse e-mail invalide."}
 
-    # 2. Extraction du matricule (recouvre matricule_Etri, matricule_info, matricule_meca, etc.)
+    # 2. Génération du Code de Transaction Unique & extraction du matricule
+    code_recu_unique = generer_code_transaction()
     matricule_code = extraire_valeur(data, ["matricule", "matr", "code_etudiant"], "N/A")
     
-    # 3. Extraction des autres informations
+    # 3. Extraction des autres champs
     filiere = nettoyer_texte(extraire_valeur(data, ["filiere", "option", "section", "promotion"], "Non spécifiée"))
     motif = nettoyer_texte(extraire_valeur(data, ["motif", "frais", "raison", "paiement"], "Frais d'études"))
     montant = extraire_valeur(data, ["montant", "somme", "prix", "valeur"], "0")
@@ -174,17 +198,17 @@ async def kobo_webhook(request: Request):
     pin_saisi = extraire_valeur(data, ["pin", "code"], "")
     nom_agent = DICTIONNAIRE_AGENTS.get(pin_saisi, nettoyer_texte(extraire_valeur(data, ["agent", "percepteur"], "Agent Percepteur")))
 
-    # 4. Contrôle Anti-Fraude du Bordereau
+    # 4. Anti-Fraude
     if num_bordereau != "N/A" and num_bordereau in BORDEREAUX_UTILISES:
-        print(f"🚨 TENTATIVE DE FRAUDE : Bordereau {num_bordereau} réutilisé !")
         envoyer_alerte_fraude(num_bordereau, matricule_code, nom_agent)
-        return {"status": "rejected", "message": "Bordereau déjà utilisé. Alerte transmise."}
+        return {"status": "rejected", "message": "Bordereau déjà utilisé."}
 
     if num_bordereau != "N/A":
         BORDEREAUX_UTILISES.add(num_bordereau)
 
-    # 5. Génération du Reçu PDF
+    # 5. Génération PDF avec QR Code
     pdf_bytes = generer_recu_pdf(
+        code_recu=code_recu_unique,
         matricule=matricule_code,
         filiere=filiere,
         motif=motif,
@@ -196,9 +220,9 @@ async def kobo_webhook(request: Request):
         nom_agent=nom_agent
     )
 
-    # 6. Envoi de l'e-mail avec le reçu PDF
+    # 6. Envoi de l'e-mail
     msg = EmailMessage()
-    msg["Subject"] = f"Reçu de paiement ISTA-LB - Matricule {matricule_code}"
+    msg["Subject"] = f"Reçu de paiement ISTA-LB [{code_recu_unique}] - Matricule {matricule_code}"
     msg["From"] = f"Comptabilité ISTA-LB <{SENDER_EMAIL}>"
     msg["To"] = email_destinataire
 
@@ -206,12 +230,14 @@ async def kobo_webhook(request: Request):
 
 Veuillez trouver ci-joint votre reçu de paiement officiel délivré par le service de comptabilité de l'ISTA-LB.
 
-RÉCAPITULATIF DU PAIEMENT :
+INFORMATIONS DE LA TRANSACTION :
+- N° Reçu Unique : {code_recu_unique}
 - Matricule Étudiant : {matricule_code}
 - Option / Filière : {filiere}
-- Motif : {motif}
 - Montant : {montant} {devise.upper()}
 - N° Bordereau : {num_bordereau}
+
+Note : Ce document contient un QR Code officiel vérifiable lors des examens.
 
 Cordialement,
 Le Service de la Comptabilité et des Finances
@@ -222,7 +248,7 @@ ISTA-LB (Boma)
         pdf_bytes,
         maintype="application",
         subtype="pdf",
-        filename=f"Recu_ISTA_LB_{matricule_code}.pdf"
+        filename=f"Recu_{code_recu_unique}_{matricule_code}.pdf"
     )
 
     try:
@@ -231,10 +257,6 @@ ISTA-LB (Boma)
             if SMTP_PASSWORD:
                 server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.send_message(msg)
-
-        print(f"✅ E-mail envoyé avec succès à {email_destinataire} pour le matricule {matricule_code}")
-        return {"status": "success", "message": "Reçu PDF envoyé"}
-
+        return {"status": "success", "message": "Reçu PDF avec QR Code envoyé", "id_recu": code_recu_unique}
     except Exception as e:
-        print(f"❌ Erreur lors de l'envoi SMTP : {e}")
         return {"status": "failed", "error": str(e)}
