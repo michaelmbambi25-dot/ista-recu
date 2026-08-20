@@ -17,7 +17,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SENDER_EMAIL = "michaelmbambi25@gmail.com"
 
 DICTIONNAIRE_AGENTS = {
-    "1234": "M. KABANGU Alain",
+    "1234": "M. LAKIA Kaba",
     "5678": "Mme MAVUNGU Clarisse",
     "0101": "M. DINZENZA Geordi",
     "0303": "M. MBAMBI Mike",
