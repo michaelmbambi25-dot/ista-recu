@@ -12,9 +12,13 @@ app = FastAPI()
 
 # Configuration SMTP Brevo
 SMTP_SERVER = "smtp-relay.brevo.com"
+SMTP_PORT = 2525  # Vous pouvez aussi tester 587 si le port 2525 bloque
 SMTP_USERNAME = "b5f05b001@smtp-brevo.com"
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SENDER_EMAIL = "michaelmbambi25@gmail.com"
+
+# Base des bordereaux déjà enregistrés en mémoire (Anti-fraude)
+BORDEREAUX_UTILISES = set()
 
 DICTIONNAIRE_AGENTS = {
     "1234": "M. LAKIA Kaba",
@@ -23,9 +27,8 @@ DICTIONNAIRE_AGENTS = {
     "0303": "M. MBAMBI Mike",
 }
 
-# Dictionnaire associant les codes d'options Kobo (m1, m2...) aux noms d'étudiants
+# Dictionnaire de secours pour correspondance des matricules
 DICTIONNAIRE_ETUDIANTS = {
-    # Code Kobo (colonne bleue m1, m2...) : Nom de l'étudiant
     "L2": "NSAKU MVUBU Dieu",
     "L1": "NSASI NIATI Brigitte",
     "L3": "NZUZI NZUZI Martin.",
@@ -41,8 +44,6 @@ DICTIONNAIRE_ETUDIANTS = {
     "prepo": "MANIKA MANIKA Flavien",
     "prepo": "KHASA KHASA Pedro",
     "prepo": "MABIALA PHEMBA Daniel",
-    # Ajoutez ici tous vos étudiants selon le même modèle :
-    # "m6": "NOM ETUDIANT 6",
 }
 
 def nettoyer_texte(texte: str) -> str:
@@ -72,24 +73,49 @@ def extraire_valeur(data: dict, mots_cles: list, defaut: str = "N/A") -> str:
     return defaut
 
 def obtenir_nom_etudiant(data: dict, matricule_code: str) -> str:
-    """1. Vérifie si un champ 'nom_etudiant' ou 'calcul' existe dans Kobo
-       2. Sinon, cherche la correspondance dans le dictionnaire Python."""
+    """1. Recupere en priorite le nom généré par la formule Kobo (champ calcul)
+       2. Sinon, cherche dans le dictionnaire Python."""
     
-    # Recherche d'un champ nom transmis directement par Kobo
-    nom_kobo = extraire_valeur(data, ["nom_etudiant", "nom_complet", "student_name"], "")
-    if nom_kobo and nom_kobo.lower() not in ["n/a", "none", "null"]:
+    nom_kobo = extraire_valeur(data, ["nom_etudiant", "nom_complet", "student_name", "calcul"], "")
+    if nom_kobo and nom_kobo.lower() not in ["n/a", "none", "null", "étudiant", "etudiant"]:
         return nettoyer_texte(nom_kobo)
 
-    # Recherche via le code du matricule (ex: m1, m2)
     if matricule_code in DICTIONNAIRE_ETUDIANTS:
         return DICTIONNAIRE_ETUDIANTS[matricule_code]
     
-    # Recherche insensible à la casse
     for code, nom in DICTIONNAIRE_ETUDIANTS.items():
         if code.lower() == matricule_code.lower():
             return nom
 
     return "Étudiant"
+
+def envoyer_alerte_fraude(num_bordereau: str, nom_etudiant: str, nom_agent: str):
+    """Envoie un e-mail d'alerte au responsable de la comptabilité."""
+    msg = EmailMessage()
+    msg["Subject"] = f"🚨 ALERTE FRAUDE : Bordereau réutilisé ({num_bordereau})"
+    msg["From"] = f"Système Anti-Fraude ISTA-LB <{SENDER_EMAIL}>"
+    # Ajoutez cette ligne sous SENDER_EMAIL :
+    AUTHORITY_EMAIL = "stephaniepfiti@gmail.com"  # Remplacez par l'e-mail du responsable
+    msg["To"] = AUTHORITY_EMAIL
+
+    msg.set_content(f"""ATTENTION : Tentative de soumission d'un bordereau en double !
+
+DÉTAILS DU SIGNALEMENT :
+- N° Bordereau suspect : {num_bordereau}
+- Nom indiqué sur le formulaire : {nom_etudiant}
+- Agent qui a saisi le formulaire : {nom_agent}
+
+Ce numéro de bordereau a déjà été utilisé pour générer un reçu auparavant. Aucun reçu officiel n'a été émis pour cette nouvelle tentative.
+""")
+
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
+            server.starttls()
+            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            server.send_message(msg)
+        print(f"⚠️ Alerte fraude envoyée par e-mail pour le bordereau {num_bordereau}")
+    except Exception as e:
+        print(f"❌ Erreur lors de l'envoi de l'alerte fraude : {e}")
 
 def generer_recu_pdf(nom, matricule, filiere, motif, montant, devise, banque, num_bordereau, date_enregistr, nom_agent):
     buffer = io.BytesIO()
@@ -158,16 +184,19 @@ async def kobo_webhook(request: Request):
     print("=== DONNÉES REÇUES DE KOBO ===")
     print(data)
 
+    # 1. Extraction de l'adresse e-mail
     email_destinataire = extraire_valeur(data, ["email", "mail", "courriel"], "")
-    if not email_destinataire:
-        return {"status": "error", "message": "Adresse e-mail manquante."}
+    if not email_destinataire or "@" not in email_destinataire:
+        print("❌ ERREUR : Adresse e-mail invalide ou introuvable dans la soumission.")
+        return {"status": "error", "message": "Adresse e-mail invalide ou manquante."}
 
-    # Extraction du code matricule (ex: m1, m2)
+    # 2. Extraction du matricule (capture automatiquement matricule_Etri, matricule_info, matricule_meca, matricule_BTP, matricule_prepo)
     matricule_code = extraire_valeur(data, ["matricule", "matr", "code_etudiant"], "N/A")
     
-    # Obtention du nom via le dictionnaire ou le champ calcul
+    # 3. Récupération du nom (calculé dans Kobo ou dictionnaire)
     nom_etudiant = obtenir_nom_etudiant(data, matricule_code)
     
+    # 4. Extractions secondaires
     filiere = nettoyer_texte(extraire_valeur(data, ["filiere", "option", "section", "promotion"], "Non spécifiée"))
     motif = nettoyer_texte(extraire_valeur(data, ["motif", "frais", "raison", "paiement"], "Frais d'études"))
     montant = extraire_valeur(data, ["montant", "somme", "prix", "valeur"], "0")
@@ -179,6 +208,17 @@ async def kobo_webhook(request: Request):
     pin_saisi = extraire_valeur(data, ["pin", "code"], "")
     nom_agent = DICTIONNAIRE_AGENTS.get(pin_saisi, nettoyer_texte(extraire_valeur(data, ["agent", "percepteur"], "Agent Percepteur")))
 
+    # --- CONTRÔLE ANTI-FRAUDE DU BORDEREAU ---
+    if num_bordereau != "N/A" and num_bordereau in BORDEREAUX_UTILISES:
+        print(f"🚨 TENTATIVE DE FRAUDE : Le bordereau {num_bordereau} a déjà été utilisé !")
+        envoyer_alerte_fraude(num_bordereau, nom_etudiant, nom_agent)
+        return {"status": "rejected", "message": "Bordereau déjà utilisé. Alerte transmise."}
+
+    if num_bordereau != "N/A":
+        BORDEREAUX_UTILISES.add(num_bordereau)
+    # ----------------------------------------
+
+    # 5. Génération du PDF
     pdf_bytes = generer_recu_pdf(
         nom=nom_etudiant,
         matricule=matricule_code,
@@ -192,6 +232,7 @@ async def kobo_webhook(request: Request):
         nom_agent=nom_agent
     )
 
+    # 6. Préparation du message
     msg = EmailMessage()
     msg["Subject"] = f"Reçu de paiement ISTA-LB - {nom_etudiant} ({matricule_code})"
     msg["From"] = f"Comptabilité ISTA-LB <{SENDER_EMAIL}>"
@@ -220,15 +261,19 @@ ISTA-LB (Boma)
         filename=f"Recu_ISTA_LB_{matricule_code}.pdf"
     )
 
+    # 7. Envoi par SMTP Brevo
     try:
-        with smtplib.SMTP(SMTP_SERVER, 2525, timeout=15) as server:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
             server.starttls()
-            server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            if SMTP_PASSWORD:
+                server.login(SMTP_USERNAME, SMTP_PASSWORD)
+            else:
+                print("⚠️ Attention : La variable d'environnement SMTP_PASSWORD n'est pas définie.")
             server.send_message(msg)
 
-        print(f"✅ E-mail envoyé avec succès pour {nom_etudiant}")
+        print(f"✅ E-mail envoyé avec succès à {email_destinataire} pour {nom_etudiant}")
         return {"status": "success", "message": "Reçu PDF envoyé"}
 
     except Exception as e:
-        print(f"❌ Erreur d'envoi : {e}")
+        print(f"❌ Erreur lors de l'envoi SMTP : {e}")
         return {"status": "failed", "error": str(e)}
